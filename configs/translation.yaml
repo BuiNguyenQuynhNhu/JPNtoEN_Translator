@@ -1,0 +1,5 @@
+data:
+  MAX_LEN: 128
+  DATASET: "twigs/kftt-ja-en"
+model:
+  TOKENIZER: "Helsinki-NLP/opus-mt-ja-en"
