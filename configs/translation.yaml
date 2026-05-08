@@ -1,7 +1,6 @@
 data:
   MAX_LEN: 128
-  KFTT_ORIG: "data/kftt/orig"
-  KFTT_TOK: "data/kftt/tok"
+  KFTT: "data/kftt"
 
 device: cuda
 model:
@@ -9,10 +8,12 @@ model:
   SP_VOCAB: "src/translation/data/kftt_spm.vocab"
   VOCAB_SIZE: 16000
   MAX_LEN: 128
-  BATCH_SIZE: 32
+  BATCH_SIZE: 128
   EPOCHS: 10
-  lr: 1e-4
+  LEARNING_RATE: 0.0001
   IGNORE_INDEX: -100
+  NUM_WORKER: 4
+  
 
 infer:
   checkpoints: ""
