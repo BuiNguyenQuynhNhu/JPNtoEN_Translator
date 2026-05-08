@@ -1,7 +1,7 @@
 import torch
 import math
 from src.translation.data.kftt import KFTTDataset
-from src.translation.model import TransformerNMT, generate_mask
+from src.models.model import TransformerNMT, generate_mask
 import sentencepiece as spm
 
 def greedy_decode(model, sp, src_text, max_len=128, device='cpu'):

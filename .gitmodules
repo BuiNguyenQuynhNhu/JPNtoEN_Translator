@@ -1,3 +1,6 @@
 [submodule "src/translation/sentencepiece"]
 	path = src/translation/sentencepiece
 	url = https://github.com/google/sentencepiece.git
+[submodule "src/data/sentencepiece"]
+	path = src/data/sentencepiece
+	url = https://github.com/google/sentencepiece.git
