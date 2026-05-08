@@ -4,20 +4,20 @@
 
 ### Part 1: Japanese to English translate
 
-- [] **Preprocessing**
-    - [x] Implement `KFTTDataset` and `DataLoader`
-    - [] Train subword tokenizer for JA and EN
-- [] **Model development **
-- [] **Training & Optimization **
-- [] **Inference**
+[x] **Preprocessing**
+    [x] Implement `KFTTDataset` and `DataLoader`
+    [x] Train subword tokenizer for JA and EN
+[] **Model development **
+[] **Training & Optimization **
+[] **Inference**
 
 
 ### Part 2: OCR & Text Extractrion
 
-- []**Preprocessing**
-- []**Text Detection**
-- []**Text Recognition**
-- []**Post processing**
+[]**Preprocessing**
+[]**Text Detection**
+[]**Text Recognition**
+[]**Post processing**
 
 ## Project architecture
 
