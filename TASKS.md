@@ -24,8 +24,7 @@
 ```text
 manga-translate/
 ├── data/
-│   ├── raw/                # Japanese raw & Manga samples
-│   └── processed/          # Tokenized data & OCR crops
+│    
 ├── src/
 │   ├── ocr/                # Module for detection & recognition
 │   │   ├── detector.py

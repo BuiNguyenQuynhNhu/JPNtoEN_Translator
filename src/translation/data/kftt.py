@@ -170,3 +170,15 @@ class KFTTDataset(Dataset):
             "raw_ja": ja_text,
             "raw_en": en_text
         }
+        
+def kftt_spm(batch):
+    input_ids = torch.stack([item["input_ids"] for item in batch], dim=0)
+    attention_mask = torch.stack([item["attention_mask"] for item in batch], dim=0)
+    labels = torch.stack([item["labels"] for item in batch], dim=0)
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "raw_ja": [item["raw_ja"] for item in batch],
+        "raw_en": [item["raw_en"] for item in batch],
+    }

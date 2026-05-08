@@ -1,5 +1,18 @@
 data:
   MAX_LEN: 128
-  DATASET: "twigs/kftt-ja-en"
+  KFTT_ORIG: "data/kftt/orig"
+  KFTT_TOK: "data/kftt/tok"
+
+device: cuda
 model:
-  TOKENIZER: "Helsinki-NLP/opus-mt-ja-en"
+  SP_MODEL: "src/translation/data/kftt_spm.model"
+  SP_VOCAB: "src/translation/data/kftt_spm.vocab"
+  VOCAB_SIZE: 16000
+  MAX_LEN: 128
+  BATCH_SIZE: 32
+  EPOCHS: 10
+  lr: 1e-4
+  IGNORE_INDEX: -100
+
+infer:
+  checkpoints: ""
