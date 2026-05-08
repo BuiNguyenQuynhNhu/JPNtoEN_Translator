@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from torch.nn import CrossEntropyLoss
-from model import TransformerNMT, generate_mask
+from src.translation.model import TransformerNMT, generate_mask
 from src.translation.data.kftt import KFTTDataset, kftt_spm
 import os
 import yaml
