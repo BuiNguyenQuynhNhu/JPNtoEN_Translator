@@ -1,6 +1,4 @@
-from translation.data.kftt import KFTTDataset
-import sentencepiece as spm
-sp = spm.SentencePieceProcessor()
-sp.load("kftt_spm.model")
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-
+tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M")
+model = AutoModelForSeq2SeqLM.from_pretrained("facebook/nllb-200-distilled-600M")
