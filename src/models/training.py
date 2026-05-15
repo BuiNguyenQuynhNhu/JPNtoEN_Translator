@@ -1,105 +1,117 @@
-import torch
-from torch.utils.data import DataLoader
-from torch.nn import CrossEntropyLoss
-from src.models.decoder import TransformerNMT, generate_mask
-from src.translation.data.kftt import KFTTDataset, kftt_spm
-import os
-from tqdm.auto import tqdm
-import time
 import yaml
+import torch
+import evaluate
+from datasets import load_dataset
+from transformers import AutoTokenizer, M2M100ForConditionalGeneration, Seq2SeqTrainingArguments, Seq2SeqTrainer, DataCollatorForSeq2Seq
+from peft import get_peft_model, LoraConfig, TaskType
+from src.models.encoder import GraphBuilder
+from src.models.decoder import GraphAugmentedNLLB
 
-with open("configs/translation.yaml", "r") as f:
-    config = yaml.safe_load(f)
+def load_config():
+    with open("configs/translation.yaml", "r") as f:
+        return yaml.safe_load(f)
 
-device = torch.device(config["device"])
+def main():
+    cfg = load_config()
+    model_cfg = cfg["model"]
+    data_cfg = cfg["data"]
+    
+    device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_cfg["MODEL_NAME"])
+    tokenizer.src_lang = model_cfg["SRC_LANG"]
+    tokenizer.tgt_lang = model_cfg["TGT_LANG"]
+    
+    graph_builder = GraphBuilder(tokenizer)
+    
+    print(f"Loading Dataset: {data_cfg['DATASET_NAME']}")
+    dataset = load_dataset(data_cfg["DATASET_NAME"])
+    
+    if data_cfg.get("SUBSET_SIZE"):
+        train_data = dataset['train'].select(range(data_cfg["SUBSET_SIZE"]))
+        val_data = dataset['test'].select(range(data_cfg.get("VAL_SUBSET_SIZE", 100)))
+    else:
+        train_data = dataset['train']
+        val_data = dataset['test']
+        
+    def preprocess_function(examples):
+        inputs = [ex['ja'] for ex in examples['translation']]
+        targets = [ex['en'] for ex in examples['translation']]
+        
+        model_inputs = tokenizer(inputs, max_length=model_cfg["MAX_LENGTH"], truncation=True, padding="max_length")
+        
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(targets, max_length=model_cfg["MAX_LENGTH"], truncation=True, padding="max_length")
+        model_inputs["labels"] = labels["input_ids"]
+        
+        batch_graphs = []
+        for text in inputs:
+            bias_matrix = graph_builder.build_dense_graph(text, model_cfg["MAX_LENGTH"])
+            batch_graphs.append(bias_matrix.tolist())
+            
+        model_inputs["edge_bias_matrix"] = batch_graphs
+        return model_inputs
 
-# data config
-data_dir = config["data"]["KFTT"]
-max_len = config["data"]["MAX_LEN"]
+    print("Tokenizing and building graphs...")
+    tokenized_train = train_data.map(preprocess_function, batched=True, remove_columns=['translation'])
+    tokenized_val = val_data.map(preprocess_function, batched=True, remove_columns=['translation'])
+    
+    print("Loading Base NLLB Model...")
+    base_model = M2M100ForConditionalGeneration.from_pretrained(model_cfg["MODEL_NAME"])
+    
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_2_SEQ_LM, 
+        inference_mode=False, 
+        r=model_cfg["LORA_R"], 
+        lora_alpha=model_cfg["LORA_ALPHA"], 
+        lora_dropout=model_cfg["LORA_DROPOUT"],
+        target_modules=["q_proj", "v_proj"]
+    )
+    peft_model = get_peft_model(base_model, peft_config)
+    
+    class ModelConfig:
+        NUM_RELATIONS = model_cfg["NUM_RELATIONS"]
+        MEMORY_WINDOW_SIZE = model_cfg["MEMORY_WINDOW_SIZE"]
+        
+    model = GraphAugmentedNLLB(peft_model, ModelConfig()).to(device)
+    print("Architecture Initialized.")
+    
+    training_args = Seq2SeqTrainingArguments(
+        output_dir=cfg["infer"]["output_dir"],
+        evaluation_strategy="epoch",
+        learning_rate=float(model_cfg["LEARNING_RATE"]),
+        per_device_train_batch_size=model_cfg["BATCH_SIZE"],
+        per_device_eval_batch_size=model_cfg["BATCH_SIZE"],
+        weight_decay=0.01,
+        save_total_limit=3,
+        num_train_epochs=model_cfg["EPOCHS"],
+        fp16=True, 
+        predict_with_generate=True,
+        gradient_accumulation_steps=model_cfg["GRADIENT_ACCUMULATION_STEPS"],
+        remove_unused_columns=False,
+        report_to = 'None',
+        label_smoothing_factor=0.1
+    )
+    
+    data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+    
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_train,
+        eval_dataset=tokenized_val,
+        tokenizer=tokenizer,
+        data_collator=data_collator
+    )
+    
+    print("Starting Training...")
+    trainer.train()
+    
+    # Save the custom model state dict
+    torch.save(model.state_dict(), f"{cfg['infer']['output_dir']}/pytorch_model.bin")
+    tokenizer.save_pretrained(cfg["infer"]["output_dir"])
+    print(f"Model saved to {cfg['infer']['output_dir']}")
 
-# model config
-sp_model = config["model"]["SP_MODEL"]
-vocab_size = config["model"]["VOCAB_SIZE"]
-batch_size = config["model"]["BATCH_SIZE"]
-epochs = config["model"]["EPOCHS"]
-num_worker = config["model"]["NUM_WORKERS"]
-lr = float(config["model"]["LEARNING_RATE"])
-ignore_index = config["model"]["IGNORE_INDEX"]
-
-# datasets + loaders
-train_ds = KFTTDataset(data_dir, split="train", sp_model_path=sp_model, train_sp_model=False, max_length=max_len, add_bos_eos=True, ignore_index=ignore_index)
-dev_ds = KFTTDataset(data_dir, split="dev", sp_model_path=sp_model, train_sp_model=False, max_length=max_len, add_bos_eos=True, ignore_index=ignore_index)
-train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=kftt_spm)
-dev_loader = DataLoader(dev_ds, batch_size=batch_size, shuffle=False, collate_fn=kftt_spm)
-
-# model
-model = TransformerNMT(vocab_size=vocab_size, d_model=512, nhead=8, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, max_len=max_len, tie_embeddings=True)
-model.to(device)
-
-# optimizer + loss
-optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-criterion = CrossEntropyLoss(ignore_index=ignore_index)
-
-for epoch in range(1, epochs+1):
-    model.train()
-    epoch_loss = 0.0
-    start_time = time.time()
-
-    train_iter = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs} [train]", leave=False)
-    processed = 0
-    for batch in train_iter:
-        src = batch["input_ids"].to(device)
-        labels = batch["labels"].to(device)
-
-        # chuẩn bị tgt_input như trước
-        tgt_input = labels.clone()
-        tgt_input[tgt_input == ignore_index] = 0
-        tgt_input = torch.roll(tgt_input, shifts=1, dims=1)
-        tgt_input[:, 0] = 2  # BOS id
-
-        src_key_padding_mask = (src == 0)
-        tgt_key_padding_mask = (tgt_input == 0)
-        tgt_mask = generate_mask(tgt_input.size(1)).to(device)
-
-        optimizer.zero_grad()
-        logits = model(src, tgt_input,
-                       src_key_padding_mask=src_key_padding_mask,
-                       tgt_key_padding_mask=tgt_key_padding_mask,
-                       tgt_mask=tgt_mask,
-                       memory_key_padding_mask=src_key_padding_mask)
-        loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        batch_loss = loss.item()
-        epoch_loss += batch_loss
-        processed += 1
-
-        lr = optimizer.param_groups[0]['lr']
-        avg_loss_so_far = epoch_loss / processed
-        train_iter.set_postfix({"batch_loss": f"{batch_loss:.4f}", "avg_loss": f"{avg_loss_so_far:.4f}", "lr": f"{lr:.2e}"})
-    elapsed = time.time() - start_time
-    avg_train_loss = epoch_loss / len(train_loader)
-    print(f"Epoch {epoch} train loss {avg_train_loss:.4f} time {elapsed:.1f}s")
-
-    model.eval()
-    dev_loss = 0.0
-    with torch.no_grad():
-        dev_iter = tqdm(dev_loader, desc=f"Epoch {epoch}/{epochs} [dev]", leave=False)
-        for batch in dev_iter:
-            src = batch["input_ids"].to(device)
-            labels = batch["labels"].to(device)
-            tgt_input = labels.clone()
-            tgt_input[tgt_input == ignore_index] = 0
-            tgt_input = torch.roll(tgt_input, shifts=1, dims=1)
-            tgt_input[:, 0] = 2
-            src_key_padding_mask = (src == 0)
-            tgt_key_padding_mask = (tgt_input == 0)
-            tgt_mask = generate_mask(tgt_input.size(1)).to(device)
-            logits = model(src, tgt_input, src_key_padding_mask=src_key_padding_mask, tgt_key_padding_mask=tgt_key_padding_mask, tgt_mask=tgt_mask, memory_key_padding_mask=src_key_padding_mask)
-            loss = criterion(logits.view(-1, logits.size(-1)), labels.view(-1))
-            dev_loss += loss.item()
-    print(f"Epoch {epoch} dev loss {dev_loss/len(dev_loader):.4f}")
-
-    # save checkpoint
-    torch.save({"epoch": epoch, "model_state": model.state_dict(), "optimizer_state": optimizer.state_dict()}, f"checkpoint_epoch{epoch}.pt")
+if __name__ == "__main__":
+    main()

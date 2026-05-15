@@ -1,19 +1,24 @@
 data:
-  MAX_LEN: 128
-  KFTT: "data/kftt"
+  DATASET_NAME: "may-ohta/kftt"
+  SUBSET_SIZE: 1000
+  VAL_SUBSET_SIZE: 100
 
 device: cuda
 model:
-  SP_MODEL: "src/translation/data/kftt_spm.model"
-  SP_VOCAB: "src/translation/data/kftt_spm.vocab"
-  VOCAB_SIZE: 16000
-  MAX_LEN: 128
-  BATCH_SIZE: 128
-  EPOCHS: 10
-  LEARNING_RATE: 0.0001
-  IGNORE_INDEX: -100
-  NUM_WORKER: 4
-  
+  MODEL_NAME: "facebook/nllb-200-distilled-600M"
+  SRC_LANG: "jpn_Jpan"
+  TGT_LANG: "eng_Latn"
+  MAX_LENGTH: 128
+  BATCH_SIZE: 8
+  EPOCHS: 3
+  LEARNING_RATE: 0.0002
+  GRADIENT_ACCUMULATION_STEPS: 4
+  NUM_RELATIONS: 50
+  MEMORY_WINDOW_SIZE: 3
+  LORA_R: 8
+  LORA_ALPHA: 32
+  LORA_DROPOUT: 0.1
 
 infer:
-  checkpoints: ""
+  output_dir: "./results"
+  checkpoints: "./checkpoints"
