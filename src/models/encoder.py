@@ -1,75 +1,7 @@
-import os
 import torch
 import torch.nn as nn
-import spacy
-import numpy as np
 import math
-
-
-class GraphBuilder:
-    def __init__(self, tokenizer):
-        self.nlp = spacy.load("ja_ginza")
-        self.tokenizer = tokenizer
-        self.rel2id = {"<pad>": 0, "ROOT": 1}
-        
-    def build_dense_graph(self, text, max_length):
-        doc = self.nlp(text)
-        
-        encoded = self.tokenizer(
-            text, 
-            return_tensors="pt", 
-            return_offsets_mapping=True,
-            add_special_tokens=True,
-            max_length=max_length,
-            truncation=True
-        )
-        
-        input_ids = encoded["input_ids"][0]
-        offsets = encoded["offset_mapping"][0]
-        special_token_mask = [id in self.tokenizer.all_special_ids for id in input_ids.tolist()]
-        
-        word_to_subwords = {token.i: [] for token in doc}
-        subword_idx = 0
-        num_subwords = len(offsets)
-        
-        for token in doc:
-            token_start = token.idx
-            token_end = token.idx + len(token.text)
-            
-            while subword_idx < num_subwords:
-                start_char, end_char = offsets[subword_idx]
-                
-                if special_token_mask[subword_idx] or start_char == end_char:
-                    subword_idx += 1
-                    continue
-                    
-                if start_char >= token_end:
-                    break 
-                    
-                if end_char <= token_start:
-                    subword_idx += 1 
-                    continue
-                    
-                word_to_subwords[token.i].append(subword_idx)
-                subword_idx += 1
-                
-        edge_bias_matrix = torch.zeros((max_length, max_length), dtype=torch.long)
-        
-        for token in doc:
-            if token.dep_ not in self.rel2id:
-                self.rel2id[token.dep_] = len(self.rel2id)
-            rel_id = self.rel2id[token.dep_]
-            
-            head_subwords = word_to_subwords.get(token.head.i, [])
-            dep_subwords = word_to_subwords.get(token.i, [])
-            
-            for head_idx in head_subwords:
-                for dep_idx in dep_subwords:
-                    if head_idx < max_length and dep_idx < max_length:
-                        edge_bias_matrix[head_idx, dep_idx] = rel_id
-                        
-        return edge_bias_matrix
-
+import collections
 
 def get_alibi_slopes(num_heads):
     closest_power_of_2 = 2 ** math.floor(math.log2(num_heads))
@@ -95,18 +27,42 @@ class GraphBiasAdapter(nn.Module):
         # Relation-Aware bias embedding
         self.edge_bias_emb = nn.Embedding(num_relations, num_heads, padding_idx=0)
         
-    def forward(self, x, edge_bias_matrix):
+    def forward(self, x, edge_index_head, edge_index_dep, edge_type):
         batch_size, seq_len, _ = x.shape
         
         q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         
+        # O(S^2) dense scores matrix, required by standard self-attention
         scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
         
-        if edge_bias_matrix is not None:
-            bias_emb = self.edge_bias_emb(edge_bias_matrix).permute(0, 3, 1, 2)
-            scores = scores + bias_emb
+        if edge_index_head is not None and edge_index_dep is not None and edge_type is not None:
+            # edge_type: (Total_Edges,)
+            bias_emb = self.edge_bias_emb(edge_type) # (Total_Edges, num_heads)
+            
+            # Since scores is (B, H, S, S), we need to know which batch each edge belongs to.
+            # In our custom collate_fn, we will pad edge_index so it's (B, Max_Edges).
+            # If so, edge_type is (B, Max_Edges).
+            # bias_emb is (B, Max_Edges, num_heads).
+            if bias_emb.dim() == 3:
+                # We scatter directly into the scores matrix.
+                # bias_emb: (B, E, H) -> transpose -> (B, H, E)
+                bias_emb = bias_emb.transpose(1, 2)
+                
+                # To scatter_add_, we need to flatten the S x S dimensions or use a loop.
+                # Actually, an easy way is just to iterate over batches or use index_put_.
+                for b in range(batch_size):
+                    # Get valid edges for this batch (ignore padding -1 or 0)
+                    valid_mask = edge_type[b] > 0
+                    heads = edge_index_head[b][valid_mask]
+                    deps = edge_index_dep[b][valid_mask]
+                    embs = bias_emb[b, :, valid_mask] # (H, V_E)
+                    
+                    if heads.numel() > 0:
+                        # In-place scatter addition
+                        # scores[b, :, heads, deps] += embs
+                        scores[b].index_put_((slice(None), heads, deps), embs, accumulate=True)
             
         attn = torch.softmax(scores, dim=-1)
         out = torch.matmul(attn, v)
@@ -122,8 +78,9 @@ class ALiBiKVMemoryAdapter(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         
-        self.memory_k = []
-        self.memory_v = []
+        # Bounded DEQUE Memory (OOM-free)
+        self.memory_k = collections.deque(maxlen=window_size)
+        self.memory_v = collections.deque(maxlen=window_size)
         
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
@@ -140,13 +97,12 @@ class ALiBiKVMemoryAdapter(nn.Module):
         v = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         
         if len(self.memory_k) > 0:
-            past_k = torch.cat(self.memory_k, dim=2)
-            past_v = torch.cat(self.memory_v, dim=2)
+            # Because deque maxlen is fixed, this will never OOM.
+            past_k = torch.cat(list(self.memory_k), dim=2)
+            past_v = torch.cat(list(self.memory_v), dim=2)
             
-            # Cross-Attention Querying Past Context
             scores = torch.matmul(q, past_k.transpose(-2, -1)) / (self.head_dim ** 0.5)
             
-            # Apply ALiBi distance penalty
             M_S = past_k.size(2)
             q_idx = torch.arange(seq_len, device=x.device).unsqueeze(1)
             k_idx = torch.arange(M_S, device=x.device).unsqueeze(0)
@@ -164,16 +120,13 @@ class ALiBiKVMemoryAdapter(nn.Module):
             return torch.zeros_like(x), k, v
         
     def update_memory(self, k, v):
+        # Strict detach to prevent gradient accumulation
         self.memory_k.append(k.detach())
         self.memory_v.append(v.detach())
-        if len(self.memory_k) > self.window_size:
-            self.memory_k.pop(0)
-            self.memory_v.pop(0)
 
 class ScalarResidualFusion(nn.Module):
     def __init__(self, d_model):
         super().__init__()
-        # Alpha and Beta initialized strictly small to preserve pretrained NLLB knowledge
         self.alpha = nn.Parameter(torch.tensor(0.01))
         self.beta = nn.Parameter(torch.tensor(0.01))
         
@@ -186,4 +139,3 @@ class ScalarResidualFusion(nn.Module):
         
         final_hidden = enc_out + self.alpha * graph_delta_norm + self.beta * memory_delta_norm
         return final_hidden
-

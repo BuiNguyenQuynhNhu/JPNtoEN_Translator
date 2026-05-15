@@ -1,20 +1,57 @@
 import yaml
 import torch
-import evaluate
-from datasets import load_dataset
-from transformers import AutoTokenizer, M2M100ForConditionalGeneration, Seq2SeqTrainingArguments, Seq2SeqTrainer, DataCollatorForSeq2Seq
+import json
+from datasets import load_from_disk
+from transformers import AutoTokenizer, M2M100ForConditionalGeneration, Seq2SeqTrainingArguments, Seq2SeqTrainer
 from peft import get_peft_model, LoraConfig, TaskType
-from src.models.encoder import GraphBuilder
 from src.models.decoder import GraphAugmentedNLLB
+from dataclasses import dataclass
 
 def load_config():
     with open("configs/translation.yaml", "r") as f:
         return yaml.safe_load(f)
 
+@dataclass
+class SparseGraphDataCollator:
+    tokenizer: AutoTokenizer
+    max_length: int
+    
+    def __call__(self, features):
+        batch = {
+            "input_ids": [f["input_ids"] for f in features],
+            "attention_mask": [f["attention_mask"] for f in features],
+            "labels": [f["labels"] for f in features]
+        }
+        
+        batch = self.tokenizer.pad(batch, return_tensors="pt", padding="max_length", max_length=self.max_length)
+        
+        # Sparse graphs have variable number of edges per sentence. We need to pad them to the max edges in the batch.
+        max_edges = max(len(f["edge_type"]) for f in features)
+        if max_edges == 0:
+            max_edges = 1 # Prevent empty tensor errors
+            
+        bsz = len(features)
+        
+        edge_index_head = torch.full((bsz, max_edges), 0, dtype=torch.long)
+        edge_index_dep = torch.full((bsz, max_edges), 0, dtype=torch.long)
+        edge_type = torch.full((bsz, max_edges), 0, dtype=torch.long) # 0 is <pad>
+        
+        for i, f in enumerate(features):
+            n_edges = len(f["edge_type"])
+            if n_edges > 0:
+                edge_index_head[i, :n_edges] = torch.tensor(f["edge_index_head"], dtype=torch.long)
+                edge_index_dep[i, :n_edges] = torch.tensor(f["edge_index_dep"], dtype=torch.long)
+                edge_type[i, :n_edges] = torch.tensor(f["edge_type"], dtype=torch.long)
+                
+        batch["edge_index_head"] = edge_index_head
+        batch["edge_index_dep"] = edge_index_dep
+        batch["edge_type"] = edge_type
+        
+        return batch
+
 def main():
     cfg = load_config()
     model_cfg = cfg["model"]
-    data_cfg = cfg["data"]
     
     device = torch.device(cfg["device"] if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -23,39 +60,15 @@ def main():
     tokenizer.src_lang = model_cfg["SRC_LANG"]
     tokenizer.tgt_lang = model_cfg["TGT_LANG"]
     
-    graph_builder = GraphBuilder(tokenizer)
+    save_dir = "data/processed_dataset"
+    print(f"Loading Preprocessed Offline Dataset from {save_dir}...")
+    tokenized_train = load_from_disk(f"{save_dir}/train")
+    tokenized_val = load_from_disk(f"{save_dir}/test")
     
-    print(f"Loading Dataset: {data_cfg['DATASET_NAME']}")
-    dataset = load_dataset(data_cfg["DATASET_NAME"])
-    
-    if data_cfg.get("SUBSET_SIZE"):
-        train_data = dataset['train'].select(range(data_cfg["SUBSET_SIZE"]))
-        val_data = dataset['test'].select(range(data_cfg.get("VAL_SUBSET_SIZE", 100)))
-    else:
-        train_data = dataset['train']
-        val_data = dataset['test']
-        
-    def preprocess_function(examples):
-        inputs = [ex['ja'] for ex in examples['translation']]
-        targets = [ex['en'] for ex in examples['translation']]
-        
-        model_inputs = tokenizer(inputs, max_length=model_cfg["MAX_LENGTH"], truncation=True, padding="max_length")
-        
-        with tokenizer.as_target_tokenizer():
-            labels = tokenizer(targets, max_length=model_cfg["MAX_LENGTH"], truncation=True, padding="max_length")
-        model_inputs["labels"] = labels["input_ids"]
-        
-        batch_graphs = []
-        for text in inputs:
-            bias_matrix = graph_builder.build_dense_graph(text, model_cfg["MAX_LENGTH"])
-            batch_graphs.append(bias_matrix.tolist())
-            
-        model_inputs["edge_bias_matrix"] = batch_graphs
-        return model_inputs
-
-    print("Tokenizing and building graphs...")
-    tokenized_train = train_data.map(preprocess_function, batched=True, remove_columns=['translation'])
-    tokenized_val = val_data.map(preprocess_function, batched=True, remove_columns=['translation'])
+    with open(f"{save_dir}/rel2id.json", "r") as f:
+        rel2id = json.load(f)
+    num_relations = len(rel2id)
+    print(f"Loaded {num_relations} relation types.")
     
     print("Loading Base NLLB Model...")
     base_model = M2M100ForConditionalGeneration.from_pretrained(model_cfg["MODEL_NAME"])
@@ -71,7 +84,7 @@ def main():
     peft_model = get_peft_model(base_model, peft_config)
     
     class ModelConfig:
-        NUM_RELATIONS = model_cfg["NUM_RELATIONS"]
+        NUM_RELATIONS = num_relations
         MEMORY_WINDOW_SIZE = model_cfg["MEMORY_WINDOW_SIZE"]
         
     model = GraphAugmentedNLLB(peft_model, ModelConfig()).to(device)
@@ -90,11 +103,11 @@ def main():
         predict_with_generate=True,
         gradient_accumulation_steps=model_cfg["GRADIENT_ACCUMULATION_STEPS"],
         remove_unused_columns=False,
-        report_to = 'None',
+        report_to="none",
         label_smoothing_factor=0.1
     )
     
-    data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+    data_collator = SparseGraphDataCollator(tokenizer, max_length=model_cfg["MAX_LENGTH"])
     
     trainer = Seq2SeqTrainer(
         model=model,
@@ -105,10 +118,9 @@ def main():
         data_collator=data_collator
     )
     
-    print("Starting Training...")
+    print("Starting Optimized Memory-Safe Training...")
     trainer.train()
     
-    # Save the custom model state dict
     torch.save(model.state_dict(), f"{cfg['infer']['output_dir']}/pytorch_model.bin")
     tokenizer.save_pretrained(cfg["infer"]["output_dir"])
     print(f"Model saved to {cfg['infer']['output_dir']}")

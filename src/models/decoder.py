@@ -15,8 +15,7 @@ class GraphAugmentedNLLB(nn.Module):
         self.memory_adapter = ALiBiKVMemoryAdapter(d_model, config.MEMORY_WINDOW_SIZE)
         self.fusion = ScalarResidualFusion(d_model)
         
-    def forward(self, input_ids, attention_mask=None, labels=None, edge_bias_matrix=None):
-        # 1. Base NLLB Encoder
+    def forward(self, input_ids, attention_mask=None, labels=None, edge_index_head=None, edge_index_dep=None, edge_type=None):
         encoder_outputs = self.base_model.model.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -24,21 +23,18 @@ class GraphAugmentedNLLB(nn.Module):
         )
         enc_hidden_states = encoder_outputs.last_hidden_state
         
-        # 2. Post-Encoder Adapters
-        if edge_bias_matrix is not None:
-            graph_delta = self.graph_adapter(enc_hidden_states, edge_bias_matrix)
+        if edge_index_head is not None and edge_index_dep is not None and edge_type is not None:
+            graph_delta = self.graph_adapter(enc_hidden_states, edge_index_head, edge_index_dep, edge_type)
         else:
             graph_delta = torch.zeros_like(enc_hidden_states)
             
         memory_delta, mem_k, mem_v = self.memory_adapter(enc_hidden_states)
         
-        # 3. Scalar Fusion
         fused_hidden_states = self.fusion(enc_hidden_states, graph_delta, memory_delta)
         
         if not self.training:
             self.memory_adapter.update_memory(mem_k, mem_v)
             
-        # 4. Decoder Pass using fused encoder representations
         outputs = self.base_model(
             encoder_outputs=(fused_hidden_states,),
             attention_mask=attention_mask,
@@ -48,7 +44,7 @@ class GraphAugmentedNLLB(nn.Module):
         )
         return outputs
 
-    def generate(self, input_ids, attention_mask=None, edge_bias_matrix=None, **kwargs):
+    def generate(self, input_ids, attention_mask=None, edge_index_head=None, edge_index_dep=None, edge_type=None, **kwargs):
         encoder_outputs = self.base_model.model.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -56,8 +52,8 @@ class GraphAugmentedNLLB(nn.Module):
         )
         enc_hidden_states = encoder_outputs.last_hidden_state
         
-        if edge_bias_matrix is not None:
-            graph_delta = self.graph_adapter(enc_hidden_states, edge_bias_matrix)
+        if edge_index_head is not None and edge_index_dep is not None and edge_type is not None:
+            graph_delta = self.graph_adapter(enc_hidden_states, edge_index_head, edge_index_dep, edge_type)
         else:
             graph_delta = torch.zeros_like(enc_hidden_states)
             
@@ -74,5 +70,3 @@ class GraphAugmentedNLLB(nn.Module):
             attention_mask=attention_mask,
             **kwargs
         )
-
-
