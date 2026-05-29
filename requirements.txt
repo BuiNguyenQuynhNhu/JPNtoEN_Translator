@@ -4,3 +4,5 @@ transformers
 numexpr
 sentencepiece
 datasets
+spacy
+ja_ginza

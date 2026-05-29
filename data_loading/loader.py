@@ -28,6 +28,8 @@ from typing import Optional, Dict
 from datasets import load_dataset, Dataset
 from torch.utils.data import DataLoader
 from preprocessing.tokenizer import TranslationTokenizer
+from models.graph.builder import GraphBuilder
+from models.graph.batching import batch_graphs
 
 class TranslationDatasetLoader:
     def __init__(self, config: dict, tokenizer: TranslationTokenizer):
@@ -37,6 +39,7 @@ class TranslationDatasetLoader:
         self.dataset_path = config.get("dataset_path", "may-ohta/kftt")
         self.document_level = config.get("document_level", False)
         self.context_size = config.get("context_window_size", 1)
+        self.graph_builder = GraphBuilder()
         
     def load_dataset_splits(self) -> Dict[str, Dataset]:
         """
@@ -114,7 +117,10 @@ class TranslationDatasetLoader:
             inputs = examples.get("ja", examples.get("ja_JP", []))
             targets = examples.get("en", examples.get("en_US", []))
             
-        model_inputs = {"input_ids": [], "attention_mask": [], "labels": []}
+        model_inputs = {
+            "input_ids": [], "attention_mask": [], "labels": [],
+            "graph": [], "offset_mapping": []
+        }
         
         for ja_text, en_text in zip(inputs, targets):
             src_enc = self.tokenizer.tokenize_source(ja_text)
@@ -123,8 +129,32 @@ class TranslationDatasetLoader:
             model_inputs["input_ids"].append(src_enc["input_ids"].tolist())
             model_inputs["attention_mask"].append(src_enc["attention_mask"].tolist())
             model_inputs["labels"].append(tgt_enc["labels"].tolist())
+            model_inputs["offset_mapping"].append(src_enc["offset_mapping"])
+            
+            graph = self.graph_builder.build_graph(ja_text)
+            model_inputs["graph"].append(graph)
             
         return model_inputs
+
+    def collate_fn(self, features):
+        """
+        Custom collate function to handle standard token tensors and variable-sized graph structures.
+        """
+        input_ids = torch.tensor([f["input_ids"] for f in features], dtype=torch.long)
+        attention_mask = torch.tensor([f["attention_mask"] for f in features], dtype=torch.long)
+        labels = torch.tensor([f["labels"] for f in features], dtype=torch.long)
+        
+        graphs = [f["graph"] for f in features]
+        offset_mappings = [f["offset_mapping"] for f in features]
+        
+        batched_graphs = batch_graphs(graphs, offset_mappings)
+        
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+            "graph": batched_graphs
+        }
 
     def get_dataloaders(self) -> Dict[str, DataLoader]:
         """
@@ -144,10 +174,15 @@ class TranslationDatasetLoader:
                 desc=f"Running tokenizer on {split} dataset"
             )
             
-            tokenized_ds.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+            tokenized_ds.set_format(type="python", columns=["input_ids", "attention_mask", "labels", "graph", "offset_mapping"])
             
             shuffle = True if split == "train" else False
-            dataloaders[split] = DataLoader(tokenized_ds, batch_size=batch_size, shuffle=shuffle)
+            dataloaders[split] = DataLoader(
+                tokenized_ds, 
+                batch_size=batch_size, 
+                shuffle=shuffle, 
+                collate_fn=self.collate_fn
+            )
             
         return dataloaders
 
