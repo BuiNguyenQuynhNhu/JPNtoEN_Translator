@@ -23,11 +23,12 @@ def main():
     parser.add_argument("--test_dataloader", action="store_true", help="Only test the dataloader")
     parser.add_argument("--test_model", action="store_true", help="Only test the model forward pass")
     parser.add_argument("--eval_bleu", action="store_true", help="Run BLEU evaluation on validation set")
+    parser.add_argument("--device", type=str, default="cuda", help="Device to use for training")
     args = parser.parse_args()
     
     config = load_config(args.config)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    device = args.device
+
     
     print("Initializing Tokenizer...")
     tokenizer = TranslationTokenizer(
