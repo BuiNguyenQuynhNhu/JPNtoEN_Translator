@@ -42,18 +42,6 @@ class BaselineTranslator(nn.Module):
             return_dict=True,
             **kwargs
         )
-        
-        # We explicitly extract encoder hidden states for later graph usage (Stage 5)
-        # encoder_hidden_states is a tuple of all layers, we take the last layer.
-        # Ensure we have encoder hidden states
-        if hasattr(outputs, 'encoder_hidden_states') and outputs.encoder_hidden_states is not None:
-            encoder_last_hidden_state = outputs.encoder_hidden_states[-1] 
-            # Expected shape: [B, T, D]
-        else:
-            # Fallback if model doesn't return tuple (though mBART/NLLB does when output_hidden_states=True)
-            encoder_last_hidden_state = outputs.encoder_last_hidden_state
-
-        outputs.encoder_last_hidden_state = encoder_last_hidden_state
         return outputs
         
     def generate(self, input_ids, attention_mask, **kwargs):
