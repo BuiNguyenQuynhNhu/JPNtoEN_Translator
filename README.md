@@ -29,8 +29,9 @@ To easily train and evaluate this model on a Google Colab GPU, create a new note
 # 3. (Optional) Run a quick local test to verify the forward pass and graph processing
 !python main.py --config configs/baseline.yaml --test_model
 
-# 4. Start the full training loop with SacreBLEU evaluation!
-!python main.py --config configs/baseline.yaml --eval_bleu
+# 4. Start the full multi-GPU training loop!
+# Accelerate will automatically detect all available GPUs and split the batches.
+!accelerate launch main.py --config configs/baseline.yaml --eval_bleu
 ```
 
 ### Configuration

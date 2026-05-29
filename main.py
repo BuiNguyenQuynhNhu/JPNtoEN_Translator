@@ -80,7 +80,6 @@ def main():
         train_loader=dataloaders["train"],
         val_loader=dataloaders.get("validation", []),
         config=config["training"],
-        device=device,
         eval_bleu=args.eval_bleu
     )
     

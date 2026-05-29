@@ -14,18 +14,15 @@ import os
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
+import sacrebleu
+from accelerate import Accelerator
 import sacrebleu
 
 class BaselineTrainer:
-    def __init__(self, model: nn.Module, tokenizer, train_loader, val_loader, config: dict, device: str = "cuda", eval_bleu: bool = False):
-        self.model = model.to(device)
+    def __init__(self, model: nn.Module, tokenizer, train_loader, val_loader, config: dict, eval_bleu: bool = False):
         self.tokenizer = tokenizer
-        self.train_loader = train_loader
-        self.val_loader = val_loader
         self.config = config
-        self.device = device
         self.eval_bleu = eval_bleu
         
         self.best_val_metric = float('inf') # if loss, lower is better. if bleu, higher is better.
@@ -38,92 +35,105 @@ class BaselineTrainer:
         self.mixed_precision = config.get("mixed_precision", True)
         self.output_dir = config.get("output_dir", "./checkpoints/baseline")
         
-        self.optimizer = AdamW(self.model.parameters(), lr=self.lr)
-        self.scaler = GradScaler(enabled=self.mixed_precision)
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.grad_accum_steps,
+            mixed_precision="fp16" if self.mixed_precision else "no"
+        )
+        
+        self.optimizer = AdamW(model.parameters(), lr=self.lr)
+        
+        # Accelerate takes over device placement and DDP wrapping
+        self.model, self.optimizer, self.train_loader, self.val_loader = self.accelerator.prepare(
+            model, self.optimizer, train_loader, val_loader
+        )
         
         os.makedirs(self.output_dir, exist_ok=True)
         
     def train(self):
         """
-        Executes the training loop.
+        Executes the training loop using Accelerate.
         """
-        print(f"Starting training on {self.device} for {self.epochs} epochs...")
+        self.accelerator.print(f"Starting training on {self.accelerator.device} for {self.epochs} epochs...")
         
         for epoch in range(self.epochs):
             self.model.train()
             total_loss = 0
             
-            progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
+            # Only show progress bar on main process
+            progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}", disable=not self.accelerator.is_local_main_process)
             
             for step, batch in enumerate(progress_bar):
-                # Move batch to device
-                input_ids = batch["input_ids"].to(self.device)
-                attention_mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"].to(self.device)
                 
-                graph = batch["graph"]
-                for k, v in graph.items():
-                    graph[k] = v.to(self.device)
+                # Accelerate automatically places standard tensors on device,
+                # but we must manually move our custom graph dictionary.
+                graph = batch.get("graph", None)
+                if graph is not None:
+                    for k, v in graph.items():
+                        if isinstance(v, torch.Tensor):
+                            graph[k] = v.to(self.accelerator.device)
                 
-                with autocast(enabled=self.mixed_precision):
+                with self.accelerator.accumulate(self.model):
                     outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        labels=batch["labels"],
                         graph=graph
                     )
-                    loss = outputs.loss / self.grad_accum_steps
+                    loss = outputs.loss
                     
-                self.scaler.scale(loss).backward()
-                
-                if (step + 1) % self.grad_accum_steps == 0 or (step + 1) == len(self.train_loader):
-                    # Gradient clipping
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.accelerator.backward(loss)
                     
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+                        
+                    self.optimizer.step()
                     self.optimizer.zero_grad()
                     
-                total_loss += loss.item() * self.grad_accum_steps
-                progress_bar.set_postfix({"loss": f"{loss.item() * self.grad_accum_steps:.4f}"})
+                total_loss += loss.item()
+                progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
                 
+            # Gather average loss across all processes
             avg_train_loss = total_loss / len(self.train_loader)
-            print(f"Epoch {epoch+1} completed. Avg Train Loss: {avg_train_loss:.4f}")
+            self.accelerator.print(f"Epoch {epoch+1} completed. Avg Train Loss: {avg_train_loss:.4f}")
             
-            # Validation
-            val_loss, val_bleu = self.evaluate()
+            # Checkpoint logic (only main process should save)
+            self.accelerator.wait_for_everyone()
             
-            print(f"Epoch {epoch+1} Validation Loss: {val_loss:.4f}")
-            if val_bleu is not None:
-                print(f"Epoch {epoch+1} Validation BLEU: {val_bleu:.2f}")
+            if self.accelerator.is_main_process:
+                # Validation
+                val_loss, val_bleu = self.evaluate()
                 
-            # Checkpoint logic
-            checkpoint_path = os.path.join(self.output_dir, f"checkpoint-epoch-{epoch+1}.pt")
-            self.save_checkpoint(checkpoint_path)
-            
-            # Save best checkpoint
-            is_best = False
-            if self.eval_bleu and val_bleu is not None:
-                if val_bleu > self.best_val_metric:
-                    self.best_val_metric = val_bleu
-                    is_best = True
-            else:
-                if val_loss < self.best_val_metric:
-                    self.best_val_metric = val_loss
-                    is_best = True
+                print(f"Epoch {epoch+1} Validation Loss: {val_loss:.4f}")
+                if val_bleu is not None:
+                    print(f"Epoch {epoch+1} Validation BLEU: {val_bleu:.2f}")
                     
-            if is_best:
-                best_path = os.path.join(self.output_dir, f"checkpoint-best.pt")
-                self.save_checkpoint(best_path)
-                print(f"Saved new best checkpoint to {best_path} (Metric: {self.best_val_metric:.4f})")
+                checkpoint_path = os.path.join(self.output_dir, f"checkpoint-epoch-{epoch+1}.pt")
+                self.save_checkpoint(checkpoint_path)
+                
+                # Save best checkpoint
+                is_best = False
+                if self.eval_bleu and val_bleu is not None:
+                    if val_bleu > self.best_val_metric:
+                        self.best_val_metric = val_bleu
+                        is_best = True
+                else:
+                    if val_loss < self.best_val_metric:
+                        self.best_val_metric = val_loss
+                        is_best = True
+                        
+                if is_best:
+                    best_path = os.path.join(self.output_dir, f"checkpoint-best.pt")
+                    self.save_checkpoint(best_path)
+                    print(f"Saved new best checkpoint to {best_path} (Metric: {self.best_val_metric:.4f})")
             
     def evaluate(self):
         """
         Evaluates the model on the validation set.
-        Returns the average loss, and optionally the BLEU score.
+        Runs only on the main process to simplify metric aggregation during autoregressive decoding.
         """
-        self.model.eval()
+        # Unwrap model for native Generation functionality if needed
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        unwrapped_model.eval()
         total_loss = 0
         
         all_preds = []
@@ -131,37 +141,37 @@ class BaselineTrainer:
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Evaluating"):
-                input_ids = batch["input_ids"].to(self.device)
-                attention_mask = batch["attention_mask"].to(self.device)
-                labels = batch["labels"].to(self.device)
-                
                 graph = batch.get("graph", None)
                 if graph is not None:
                     for k, v in graph.items():
-                        graph[k] = v.to(self.device)
+                        if isinstance(v, torch.Tensor):
+                            graph[k] = v.to(self.accelerator.device)
                 
                 # 1. Compute Loss
-                with autocast(enabled=self.mixed_precision):
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
-                        graph=graph
-                    )
-                    total_loss += outputs.loss.item()
+                outputs = unwrapped_model(
+                    input_ids=batch["input_ids"].to(self.accelerator.device),
+                    attention_mask=batch["attention_mask"].to(self.accelerator.device),
+                    labels=batch["labels"].to(self.accelerator.device),
+                    graph=graph
+                )
+                total_loss += outputs.loss.item()
                     
                 # 2. Compute BLEU (if enabled)
                 if self.eval_bleu:
-                    generated_tokens = self.model.generate(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
+                    generated_tokens = unwrapped_model.generate(
+                        input_ids=batch["input_ids"].to(self.accelerator.device),
+                        attention_mask=batch["attention_mask"].to(self.accelerator.device),
                         graph=graph,
                         max_length=self.config.get("max_length", 128)
                     )
                     
-                    decoded_preds = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+                    # Gather across processes to compute global BLEU
+                    generated_tokens = self.accelerator.pad_across_processes(generated_tokens, dim=1, pad_index=self.tokenizer.pad_token_id)
+                    labels = self.accelerator.pad_across_processes(batch["labels"].to(self.accelerator.device), dim=1, pad_index=-100)
                     
-                    # Replace -100 in labels with pad token id for decoding
+                    generated_tokens, labels = self.accelerator.gather_for_metrics((generated_tokens, labels))
+                    
+                    decoded_preds = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
                     labels = torch.where(labels != -100, labels, self.tokenizer.pad_token_id)
                     decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
                     
@@ -172,15 +182,15 @@ class BaselineTrainer:
         
         bleu_score = None
         if self.eval_bleu and len(all_preds) > 0:
-            # sacrebleu requires list of list for references
             bleu = sacrebleu.corpus_bleu(all_preds, [all_labels])
             bleu_score = bleu.score
             
         return avg_loss, bleu_score
         
     def save_checkpoint(self, path: str):
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
         torch.save({
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": unwrapped_model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }, path)
 

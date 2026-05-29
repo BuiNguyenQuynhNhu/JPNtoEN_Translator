@@ -3,9 +3,9 @@
 data:
   dataset_name: "kftt" 
   dataset_path: "data/kftt/orig"
-  train_subset_size: 1000
-  val_subset_size: 100
-  test_subset_size: 100
+  train_subset_size: 44000
+  val_subset_size: 1170
+  test_subset_size: 1160
   document_level: False
   context_window_size: 1 
 
@@ -16,12 +16,12 @@ model:
   max_length: 128
 
 training:
-  batch_size: 8
-  epochs: 3
+  batch_size: 16
+  epochs: 30
   learning_rate: 0.0002
   gradient_accumulation_steps: 4
   mixed_precision: True
   eval_steps: 100
   save_steps: 100
   logging_steps: 10
-  output_dir: "./checkpoints/baseline"
+  output_dir: "./checkpoints"
