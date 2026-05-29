@@ -38,7 +38,8 @@ def main():
     
     print("Initializing Dataset Loader...")
     dataset_loader = TranslationDatasetLoader(config["data"], tokenizer)
-    dataloaders = dataset_loader.get_dataloaders()
+    batch_size = config.get("training", {}).get("batch_size", 8)
+    dataloaders = dataset_loader.get_dataloaders(batch_size=batch_size)
     
     if args.test_dataloader:
         for batch in dataloaders["train"]:

@@ -156,15 +156,13 @@ class TranslationDatasetLoader:
             "graph": batched_graphs
         }
 
-    def get_dataloaders(self) -> Dict[str, DataLoader]:
+    def get_dataloaders(self, batch_size: int = 8) -> Dict[str, DataLoader]:
         """
         Returns PyTorch DataLoaders for train, validation, and test splits.
         """
         dataset_dict = self.load_dataset_splits()
         
         dataloaders = {}
-        # We need the training config to get batch size
-        batch_size = 8 # Default, should ideally be passed from training config but simplified here
         
         for split, ds in dataset_dict.items():
             tokenized_ds = ds.map(
