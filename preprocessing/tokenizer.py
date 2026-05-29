@@ -60,21 +60,20 @@ class TranslationTokenizer:
         Expected Tensor Shapes:
         - labels: [MAX_LENGTH]
         """
-        with self.tokenizer.as_target_tokenizer():
-            enc = self.tokenizer(
-                text,
-                max_length=self.max_length,
-                truncation=True,
-                padding="max_length",
-                return_tensors="pt"
-            )
-            # Replace pad_token_id with -100 for CrossEntropyLoss calculation
-            labels = enc["input_ids"].squeeze(0)
-            labels[labels == self.tokenizer.pad_token_id] = -100
-            
-            return {
-                "labels": labels,
-            }
+        enc = self.tokenizer(
+            text_target=text,
+            max_length=self.max_length,
+            truncation=True,
+            padding="max_length",
+            return_tensors="pt"
+        )
+        # Replace pad_token_id with -100 for CrossEntropyLoss calculation
+        labels = enc["input_ids"].squeeze(0)
+        labels[labels == self.tokenizer.pad_token_id] = -100
+        
+        return {
+            "labels": labels,
+        }
 
     def decode(self, token_ids: List[int], skip_special_tokens: bool = True) -> str:
         """
