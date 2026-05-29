@@ -58,9 +58,16 @@ def main():
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
             
-            outputs = model(input_ids, attention_mask, labels)
+            # Send graph tensors to device
+            graph = batch["graph"]
+            for k, v in graph.items():
+                graph[k] = v.to(device)
+            
+            outputs = model(input_ids, attention_mask, labels, graph=graph)
             print(f"Forward pass successful. Loss: {outputs.loss.item()}")
             print(f"Encoder hidden states shape: {outputs.encoder_last_hidden_state.shape}")
+            if hasattr(outputs, 'node_features'):
+                print(f"Node features shape: {outputs.node_features.shape}")
             break
         print("Model test passed!")
         return

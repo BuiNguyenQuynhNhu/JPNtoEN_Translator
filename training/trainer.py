@@ -54,11 +54,16 @@ class BaselineTrainer:
                 attention_mask = batch["attention_mask"].to(self.device)
                 labels = batch["labels"].to(self.device)
                 
+                graph = batch["graph"]
+                for k, v in graph.items():
+                    graph[k] = v.to(self.device)
+                
                 with autocast(enabled=self.mixed_precision):
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        labels=labels
+                        labels=labels,
+                        graph=graph
                     )
                     loss = outputs.loss / self.grad_accum_steps
                     
@@ -102,11 +107,16 @@ class BaselineTrainer:
                 attention_mask = batch["attention_mask"].to(self.device)
                 labels = batch["labels"].to(self.device)
                 
+                graph = batch["graph"]
+                for k, v in graph.items():
+                    graph[k] = v.to(self.device)
+                
                 with autocast(enabled=self.mixed_precision):
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        labels=labels
+                        labels=labels,
+                        graph=graph
                     )
                     total_loss += outputs.loss.item()
                     
