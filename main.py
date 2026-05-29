@@ -5,6 +5,7 @@ from preprocessing.tokenizer import TranslationTokenizer
 from data_loading.loader import TranslationDatasetLoader
 from models.full_model.baseline import BaselineTranslator
 from training.trainer import BaselineTrainer
+import os
 
 def load_config(config_path: str) -> dict:
     with open(config_path, "r") as f:
@@ -22,6 +23,10 @@ def main():
     
     config = load_config(args.config)
     device = args.device
+    
+    # Force accelerate to use fp16 if specified in config, regardless of launch command
+    if config.get("training", {}).get("mixed_precision", True):
+        os.environ["ACCELERATE_MIXED_PRECISION"] = "fp16"
     
     print("Initializing Tokenizer...")
     tokenizer = TranslationTokenizer(
