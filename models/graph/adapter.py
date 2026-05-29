@@ -70,7 +70,7 @@ class GraphMemoryAdapter(nn.Module):
         # Apply padding mask to keys
         # scores: [B, H, T, Max_Nodes]
         # key_padding_mask: [B, Max_Nodes] -> [B, 1, 1, Max_Nodes]
-        scores.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), -1e9)
+        scores.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
         
         attn_weights = torch.softmax(scores, dim=-1)
         
