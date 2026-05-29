@@ -20,10 +20,11 @@ from accelerate import Accelerator
 import sacrebleu
 
 class BaselineTrainer:
-    def __init__(self, model: nn.Module, tokenizer, train_loader, val_loader, config: dict, eval_bleu: bool = False):
+    def __init__(self, model: nn.Module, tokenizer, train_loader, val_loader, config: dict, eval_bleu: bool = False, eval_comet: bool = False):
         self.tokenizer = tokenizer
         self.config = config
         self.eval_bleu = eval_bleu
+        self.eval_comet = eval_comet
         
         self.best_val_metric = float('inf') # if loss, lower is better. if bleu, higher is better.
         if self.eval_bleu:
@@ -101,11 +102,13 @@ class BaselineTrainer:
             
             if self.accelerator.is_main_process:
                 # Validation
-                val_loss, val_bleu, val_chrf = self.evaluate()
+                val_loss, val_bleu, val_chrf, val_comet = self.evaluate()
                 
                 print(f"Epoch {epoch+1} Validation Loss: {val_loss:.4f}")
                 if val_bleu is not None:
                     print(f"Epoch {epoch+1} Validation BLEU: {val_bleu:.2f} | chrF: {val_chrf:.2f}")
+                if val_comet is not None:
+                    print(f"Epoch {epoch+1} Validation COMET: {val_comet:.4f}")
                     
                 checkpoint_path = os.path.join(self.output_dir, f"checkpoint-epoch-{epoch+1}.pt")
                 self.save_checkpoint(checkpoint_path)
@@ -138,6 +141,7 @@ class BaselineTrainer:
         
         all_preds = []
         all_labels = []
+        all_srcs = []
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Evaluating"):
@@ -174,14 +178,18 @@ class BaselineTrainer:
                     decoded_preds = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
                     labels = torch.where(labels != -100, labels, self.tokenizer.pad_token_id)
                     decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
+                    decoded_srcs = self.tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True)
                     
                     all_preds.extend(decoded_preds)
                     all_labels.extend(decoded_labels)
+                    all_srcs.extend(decoded_srcs)
                     
         avg_loss = total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0
         
         bleu_score = None
         chrf_score = None
+        comet_score_val = None
+        
         if self.eval_bleu and len(all_preds) > 0:
             bleu = sacrebleu.corpus_bleu(all_preds, [all_labels])
             bleu_score = bleu.score
@@ -189,7 +197,18 @@ class BaselineTrainer:
             chrf = sacrebleu.corpus_chrf(all_preds, [all_labels])
             chrf_score = chrf.score
             
-        return avg_loss, bleu_score, chrf_score
+        if self.eval_comet and len(all_preds) > 0:
+            try:
+                from comet import download_model, load_from_checkpoint
+                comet_path = download_model("Unbabel/wmt22-comet-da")
+                comet_model = load_from_checkpoint(comet_path)
+                data = [{"src": s, "mt": p, "ref": r} for s, p, r in zip(all_srcs, all_preds, all_labels)]
+                c_score = comet_model.predict(data, batch_size=8, gpus=1 if torch.cuda.is_available() else 0)
+                comet_score_val = c_score.system_score
+            except Exception as e:
+                print(f"COMET evaluation failed: {e}")
+            
+        return avg_loss, bleu_score, chrf_score, comet_score_val
         
     def save_checkpoint(self, path: str):
         unwrapped_model = self.accelerator.unwrap_model(self.model)

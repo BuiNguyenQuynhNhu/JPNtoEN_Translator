@@ -1,10 +1,3 @@
-"""
-main.py
-
-Entry point for the Graph-Augmented Translation Project.
-Currently runs the baseline training pipeline.
-"""
-
 import argparse
 import yaml
 import torch
@@ -22,13 +15,13 @@ def main():
     parser.add_argument("--config", type=str, default="configs/baseline.yaml", help="Path to config file")
     parser.add_argument("--test_dataloader", action="store_true", help="Only test the dataloader")
     parser.add_argument("--test_model", action="store_true", help="Only test the model forward pass")
-    parser.add_argument("--eval_bleu", action="store_true", help="Run BLEU evaluation on validation set")
+    parser.add_argument("--eval_bleu", action="store_true", help="Run BLEU and chrF evaluation on validation set")
+    parser.add_argument("--eval_comet", action="store_true", help="Run COMET evaluation on validation set (SLOW)")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use for training")
     args = parser.parse_args()
     
     config = load_config(args.config)
     device = args.device
-
     
     print("Initializing Tokenizer...")
     tokenizer = TranslationTokenizer(
@@ -81,7 +74,8 @@ def main():
         train_loader=dataloaders["train"],
         val_loader=dataloaders.get("validation", []),
         config=config["training"],
-        eval_bleu=args.eval_bleu
+        eval_bleu=args.eval_bleu,
+        eval_comet=args.eval_comet
     )
     
     trainer.train()
