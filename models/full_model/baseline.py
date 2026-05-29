@@ -46,21 +46,20 @@ class BaselineTranslator(nn.Module):
         """
         Forward pass for training.
         """
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-            output_hidden_states=True,
-            return_dict=True,
-            **kwargs
-        )
-        
         if graph is not None:
+            # 1. Run Encoder first to get hidden states for graph extraction
+            encoder_outputs = self.model.get_encoder()(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True
+            )
+            
             # Stage 7: Extract contextual node embeddings
-            if hasattr(outputs, 'encoder_hidden_states') and outputs.encoder_hidden_states is not None:
-                encoder_hs = outputs.encoder_hidden_states[-1]
+            if hasattr(encoder_outputs, 'hidden_states') and encoder_outputs.hidden_states is not None:
+                encoder_hs = encoder_outputs.hidden_states[-1]
             else:
-                encoder_hs = outputs.encoder_last_hidden_state
+                encoder_hs = encoder_outputs.last_hidden_state
                 
             node_features = self.node_extractor(
                 encoder_hs,
@@ -87,6 +86,17 @@ class BaselineTranslator(nn.Module):
                 batch_size=batch_size
             )
             
+            # 2. Run Decoder and rest of model, passing encoder_outputs
+            kwargs["encoder_outputs"] = encoder_outputs
+            outputs = self.model(
+                input_ids=input_ids, # NLLB accepts this even with encoder_outputs
+                attention_mask=attention_mask,
+                labels=labels,
+                output_hidden_states=True,
+                return_dict=True,
+                **kwargs
+            )
+            
             # Keep for backward compatibility/logging if needed
             outputs.node_features = encoded_nodes
             
@@ -94,6 +104,15 @@ class BaselineTranslator(nn.Module):
             # Clear graph state if no graph provided
             if hasattr(self.model.lm_head, "set_graph_state"):
                 self.model.lm_head.graph_state = None
+                
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                output_hidden_states=True,
+                return_dict=True,
+                **kwargs
+            )
                 
         return outputs
         
