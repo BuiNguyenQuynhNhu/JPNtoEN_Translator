@@ -1,0 +1,31 @@
+# Baseline Translation Configuration
+
+data:
+  # Supported: "kftt", "jesc", "aspec", "opensubtitles"
+  dataset_name: "kftt" 
+  # Use HuggingFace path or local path
+  dataset_path: "may-ohta/kftt"
+  # Max samples to load for quick testing/colab; set to null for full
+  train_subset_size: 1000
+  val_subset_size: 100
+  test_subset_size: 100
+  # Document-level settings
+  document_level: False
+  context_window_size: 1 # 1 means current sentence only
+
+model:
+  model_name: "facebook/nllb-200-distilled-600M"
+  src_lang: "jpn_Jpan"
+  tgt_lang: "eng_Latn"
+  max_length: 128
+
+training:
+  batch_size: 8
+  epochs: 3
+  learning_rate: 0.0002
+  gradient_accumulation_steps: 4
+  mixed_precision: True
+  eval_steps: 100
+  save_steps: 100
+  logging_steps: 10
+  output_dir: "./checkpoints/baseline"
