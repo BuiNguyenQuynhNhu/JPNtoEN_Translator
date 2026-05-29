@@ -47,12 +47,14 @@ def batch_graphs(graphs: List[Dict[str, Any]], offset_mappings: List[List[Tuple[
     - edge_index: Tensor of shape [2, Total_Edges]
     - edge_type: Tensor of shape [Total_Edges]
     - batch_index: Tensor of shape [Total_Nodes] mapping each node to its batch.
+    - local_node_index: Tensor of shape [Total_Nodes] giving the node's local index within its batch.
     """
     all_node_spans = []
     all_node_types = []
     all_edge_indices = [[], []]
     all_edge_types = []
     all_batch_indices = []
+    all_local_node_indices = []
     
     node_offset = 0
     
@@ -60,7 +62,7 @@ def batch_graphs(graphs: List[Dict[str, Any]], offset_mappings: List[List[Tuple[
         nodes = graph["nodes"]
         edges = graph["edges"]
         
-        for node in nodes:
+        for local_idx, node in enumerate(nodes):
             # Align character span to token indices
             token_start, token_end = align_char_spans_to_tokens(node["char_span"], offsets)
             all_node_spans.append([token_start, token_end])
@@ -69,6 +71,7 @@ def batch_graphs(graphs: List[Dict[str, Any]], offset_mappings: List[List[Tuple[
             all_node_types.append(node_type)
             
             all_batch_indices.append(b)
+            all_local_node_indices.append(local_idx)
             
         for edge in edges:
             all_edge_indices[0].append(edge["source"] + node_offset)
@@ -84,7 +87,8 @@ def batch_graphs(graphs: List[Dict[str, Any]], offset_mappings: List[List[Tuple[
             "node_types": torch.empty((0,), dtype=torch.long),
             "edge_index": torch.empty((2, 0), dtype=torch.long),
             "edge_type":  torch.empty((0,), dtype=torch.long),
-            "batch_index": torch.empty((0,), dtype=torch.long)
+            "batch_index": torch.empty((0,), dtype=torch.long),
+            "local_node_index": torch.empty((0,), dtype=torch.long)
         }
         
     return {
@@ -92,5 +96,6 @@ def batch_graphs(graphs: List[Dict[str, Any]], offset_mappings: List[List[Tuple[
         "node_types": torch.tensor(all_node_types, dtype=torch.long),
         "edge_index": torch.tensor(all_edge_indices, dtype=torch.long),
         "edge_type": torch.tensor(all_edge_types, dtype=torch.long),
-        "batch_index": torch.tensor(all_batch_indices, dtype=torch.long)
+        "batch_index": torch.tensor(all_batch_indices, dtype=torch.long),
+        "local_node_index": torch.tensor(all_local_node_indices, dtype=torch.long)
     }

@@ -1,54 +1,46 @@
-# SOTA Graph-Augmented Subtitle Translation 🚀
+# Graph-Augmented Japanese-to-English Translation Pipeline
 
-A production-grade, memory-efficient Japanese $\rightarrow$ English subtitle translation system. This repository combines the **NLLB-200** backbone with a **Graph Bias Adapter** (Syntax-Aware) and an **ALiBi-enhanced KV Memory Adapter** (Long-context Streaming) to deliver state-of-the-art subtitle translation.
+This repository contains a full, end-to-end research prototype for translating Japanese text into English using **NLLB-200** augmented with a **Semantic Discourse Graph**.
 
-## 🌟 Key Features
+By extracting Event and Entity nodes from the source text and feeding them into a custom Graph Transformer, we construct contextual graph memory that is injected directly into the NLLB autoregressive decoder via Cross-Attention!
 
-*   **Offline Graph Preprocessing**: Achieves 0% NLP parsing overhead during training by precomputing Japanese dependency structures via `spaCy` and saving them as sparse indices.
-*   **Sparse In-Place Scatter Attention**: Computes graph bias directly inside the $QK^T$ matrix, reducing Graph Memory complexity from $O(S^2)$ to $O(E)$ (Out-Of-Memory free).
-*   **Bounded ALiBi Memory**: Employs `collections.deque` and strict `.detach()` rules for infinite-context streaming translation without RAM leakage or positional drift.
-*   **End-to-End SRT Retiming**: Smart subtitle adjustment using a Characters-Per-Second (CPS) algorithm to extend short Japanese timestamps for English viewers.
+## Features
+- **Semantic Graph Construction:** Uses `spaCy` to extract Entities, Events, and Dependencies.
+- **Sparse-to-Dense Routing:** Highly optimized native PyTorch tensor operations (no heavy PyTorch Geometric dependency).
+- **Custom Graph Transformer:** Computes relational message passing over the semantic graph.
+- **Non-Destructive Decoder Adapter:** Wraps the HuggingFace `lm_head` to inject graph memory during both training and autoregressive `.generate()` decoding without rewriting the core `AutoModelForSeq2SeqLM`.
+- **BLEU Evaluation Loop:** Fully integrated `sacrebleu` metrics and automated best-checkpoint saving.
 
-## 🛠️ Installation
+---
 
-Make sure your environment is activated and install the necessary dependencies:
+## 🚀 How to Run on Google Colab
 
-```bash
-pip install torch transformers datasets evaluate peft sacrebleu
-pip install spacy
-pip install ja_ginza  # spaCy Japanese Model
-pip install unbabel-comet # For COMET SOTA evaluation metric
-```
-
-## 🚀 Running the Pipeline
-
-Follow these steps to train, evaluate, and use the translation system.
-
-### 1. Data Preprocessing (Offline Graph Building)
-Before training, you must process the raw dataset to extract dependency parsing information. This script will tokenize the text, run `spaCy`, and save the sparse graphs to `data/processed_dataset/`.
+To easily train and evaluate this model on a Google Colab GPU, create a new notebook, select a **T4 GPU** or better, and copy-paste the following command into a single cell:
 
 ```bash
-python -m src.preprocess
+# 1. Clone the repository
+!git clone https://github.com/BuiNguyenQuynhNhu/JPNtoEN_Translator.git
+%cd JPNtoEN_Translator
+
+# 2. Install required dependencies
+!pip install -r requirements.txt
+!python -m spacy download ja_core_news_sm
+
+# 3. (Optional) Run a quick local test to verify the forward pass and graph processing
+!python main.py --config configs/baseline.yaml --test_model
+
+# 4. Start the full training loop with SacreBLEU evaluation!
+!python main.py --config configs/baseline.yaml --eval_bleu
 ```
 
-### 2. Training
-Run the memory-optimized training pipeline. It utilizes HuggingFace `Seq2SeqTrainer` and LoRA. The model dynamically loads the precomputed sparse graphs from Step 1.
+### Configuration
+You can adjust hyperparameters (batch size, learning rate, max length, subset sizes for quick testing) inside `configs/baseline.yaml`.
 
-```bash
-python -m src.models.training
-```
-*(Note: Check `configs/translation.yaml` to adjust hyperparameters like `BATCH_SIZE`, `EPOCHS`, and `LORA_R`).*
+---
 
-### 3. Evaluation
-Evaluate your trained custom checkpoint on the validation set. It computes standard metrics: `SacreBLEU`, `chrF`, and `COMET`.
-
-```bash
-python -m src.models.evaluate
-```
-
-### 4. End-to-End SRT Translation (Inference)
-Translate a raw Japanese `.srt` subtitle file directly into English. It automatically batches the translation and handles **Smart Retiming** (default 20 Characters Per Second) so the subtitles fit the English reading speed seamlessly.
-
-```bash
-python -m src.utils.srt_utils --input video_jp.srt --output video_en.srt --cps 20 --batch 8
-```
+### File Structure
+- `configs/`: YAML configuration files.
+- `data_loading/`: Unified dataloader that handles HF datasets, local parallel files, tokenization, and `spaCy` graph construction.
+- `models/graph/`: Contains the `GraphBuilder`, `batch_graphs`, `NodeFeatureExtractor`, `GraphTransformer`, and `GraphMemoryAdapter`.
+- `models/full_model/baseline.py`: The core wrapper that stitches NLLB-200 and the Graph modules together.
+- `training/trainer.py`: The main loop handling mixed-precision, gradient clipping, evaluation, and checkpointing.

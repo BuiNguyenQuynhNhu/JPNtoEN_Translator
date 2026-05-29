@@ -6,3 +6,4 @@ sentencepiece
 datasets
 spacy
 ja_ginza
+sacrebleu
