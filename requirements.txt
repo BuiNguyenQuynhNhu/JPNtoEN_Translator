@@ -8,3 +8,7 @@ spacy
 ja_ginza
 sacrebleu
 accelerate
+unbabel-comet
+networkx
+matplotlib
+tabulate

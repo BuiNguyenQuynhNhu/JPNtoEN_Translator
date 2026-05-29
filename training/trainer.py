@@ -101,11 +101,11 @@ class BaselineTrainer:
             
             if self.accelerator.is_main_process:
                 # Validation
-                val_loss, val_bleu = self.evaluate()
+                val_loss, val_bleu, val_chrf = self.evaluate()
                 
                 print(f"Epoch {epoch+1} Validation Loss: {val_loss:.4f}")
                 if val_bleu is not None:
-                    print(f"Epoch {epoch+1} Validation BLEU: {val_bleu:.2f}")
+                    print(f"Epoch {epoch+1} Validation BLEU: {val_bleu:.2f} | chrF: {val_chrf:.2f}")
                     
                 checkpoint_path = os.path.join(self.output_dir, f"checkpoint-epoch-{epoch+1}.pt")
                 self.save_checkpoint(checkpoint_path)
@@ -181,11 +181,15 @@ class BaselineTrainer:
         avg_loss = total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0
         
         bleu_score = None
+        chrf_score = None
         if self.eval_bleu and len(all_preds) > 0:
             bleu = sacrebleu.corpus_bleu(all_preds, [all_labels])
             bleu_score = bleu.score
             
-        return avg_loss, bleu_score
+            chrf = sacrebleu.corpus_chrf(all_preds, [all_labels])
+            chrf_score = chrf.score
+            
+        return avg_loss, bleu_score, chrf_score
         
     def save_checkpoint(self, path: str):
         unwrapped_model = self.accelerator.unwrap_model(self.model)
