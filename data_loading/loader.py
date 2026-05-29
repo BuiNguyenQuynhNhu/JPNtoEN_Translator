@@ -22,6 +22,7 @@ How to test:
         break
 """
 
+import os
 import torch
 from typing import Optional, Dict
 from datasets import load_dataset, Dataset
@@ -37,19 +38,20 @@ class TranslationDatasetLoader:
         self.document_level = config.get("document_level", False)
         self.context_size = config.get("context_window_size", 1)
         
-    def load_hf_dataset(self) -> Dict[str, Dataset]:
+    def load_dataset_splits(self) -> Dict[str, Dataset]:
         """
-        Loads the dataset from HuggingFace.
+        Loads the dataset either from local directory or HuggingFace.
         """
-        raw_dataset = load_dataset(self.dataset_path)
-        
-        splits = ["train", "validation", "test"]
+        if os.path.isdir(self.dataset_path):
+            raw_dataset = self._load_local_dataset()
+        else:
+            raw_dataset = load_dataset(self.dataset_path)
+            # Rename 'dev' to 'validation' if necessary
+            if "dev" in raw_dataset:
+                raw_dataset["validation"] = raw_dataset.pop("dev")
+                
         dataset_dict = {}
-        
-        # Rename 'dev' to 'validation' if necessary
-        if "dev" in raw_dataset:
-            raw_dataset["validation"] = raw_dataset["dev"]
-            
+        splits = ["train", "validation", "test"]
         for split in splits:
             if split in raw_dataset:
                 ds = raw_dataset[split]
@@ -60,6 +62,38 @@ class TranslationDatasetLoader:
                 dataset_dict[split] = ds
                 
         return dataset_dict
+
+    def _load_local_dataset(self) -> Dict[str, Dataset]:
+        """
+        Parses local parallel corpus files (.en and .ja) into a dictionary of Datasets.
+        """
+        raw_dataset = {}
+        splits_map = {
+            "train": ["train"],
+            "validation": ["dev", "tune"],
+            "test": ["test"]
+        }
+        
+        for split, suffixes in splits_map.items():
+            for suffix in suffixes:
+                en_path = None
+                ja_path = None
+                for f in os.listdir(self.dataset_path):
+                    if suffix in f and f.endswith(".en"):
+                        en_path = os.path.join(self.dataset_path, f)
+                    elif suffix in f and f.endswith(".ja"):
+                        ja_path = os.path.join(self.dataset_path, f)
+                        
+                if en_path and ja_path:
+                    with open(en_path, "r", encoding="utf-8") as fe, open(ja_path, "r", encoding="utf-8") as fj:
+                        en_lines = [l.strip() for l in fe]
+                        ja_lines = [l.strip() for l in fj]
+                    
+                    if len(en_lines) == len(ja_lines):
+                        raw_dataset[split] = Dataset.from_dict({"en": en_lines, "ja": ja_lines})
+                        break
+                        
+        return raw_dataset
         
     def preprocess_function(self, examples):
         """
@@ -96,7 +130,7 @@ class TranslationDatasetLoader:
         """
         Returns PyTorch DataLoaders for train, validation, and test splits.
         """
-        dataset_dict = self.load_hf_dataset()
+        dataset_dict = self.load_dataset_splits()
         
         dataloaders = {}
         # We need the training config to get batch size

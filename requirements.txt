@@ -3,3 +3,4 @@ numpy
 transformers
 numexpr
 sentencepiece
+datasets

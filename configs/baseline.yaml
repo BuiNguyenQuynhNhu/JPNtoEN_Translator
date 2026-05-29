@@ -1,17 +1,13 @@
 # Baseline Translation Configuration
 
 data:
-  # Supported: "kftt", "jesc", "aspec", "opensubtitles"
   dataset_name: "kftt" 
-  # Use HuggingFace path or local path
-  dataset_path: "may-ohta/kftt"
-  # Max samples to load for quick testing/colab; set to null for full
+  dataset_path: "data/kftt/orig"
   train_subset_size: 1000
   val_subset_size: 100
   test_subset_size: 100
-  # Document-level settings
   document_level: False
-  context_window_size: 1 # 1 means current sentence only
+  context_window_size: 1 
 
 model:
   model_name: "facebook/nllb-200-distilled-600M"

@@ -9,7 +9,7 @@ import argparse
 import yaml
 import torch
 from preprocessing.tokenizer import TranslationTokenizer
-from datasets.loader import TranslationDatasetLoader
+from data_loading.loader import TranslationDatasetLoader
 from models.full_model.baseline import BaselineTranslator
 from training.trainer import BaselineTrainer
 
