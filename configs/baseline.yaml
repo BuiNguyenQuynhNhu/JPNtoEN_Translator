@@ -14,13 +14,13 @@ model:
   model_name: "facebook/nllb-200-distilled-600M"
   src_lang: "jpn_Jpan"
   tgt_lang: "eng_Latn"
-  max_length: 128
+  max_length: 256
 
 training:
-  batch_size: 2
+  batch_size: 4
   epochs: 10
   learning_rate: 0.0002
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 4
   mixed_precision: True
   eval_steps: 100
   save_steps: 100
