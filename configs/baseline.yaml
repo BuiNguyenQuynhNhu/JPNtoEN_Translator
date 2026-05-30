@@ -23,6 +23,6 @@ training:
   gradient_accumulation_steps: 4
   mixed_precision: False
   eval_steps: 100
-  save_steps: 100
+  save_steps: 0
   logging_steps: 10
   output_dir: "./checkpoints"

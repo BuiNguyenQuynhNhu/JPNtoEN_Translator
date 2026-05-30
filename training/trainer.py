@@ -60,7 +60,7 @@ class BaselineTrainer:
         self.accelerator.print(f"Starting training on {self.accelerator.device} for {self.epochs} epochs...")
         
         global_step = 0
-        save_steps = self.config.get("save_steps", 100)
+        save_steps = self.config.get("save_steps", 0)
         
         for epoch in range(self.epochs):
             self.model.train()
@@ -100,7 +100,7 @@ class BaselineTrainer:
                 progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
                 
                 global_step += 1
-                if global_step % save_steps == 0:
+                if save_steps > 0 and global_step % save_steps == 0:
                     self.accelerator.wait_for_everyone()
                     if self.accelerator.is_main_process:
                         checkpoint_path = os.path.join(self.output_dir, f"checkpoint-step-{global_step}.pt")
