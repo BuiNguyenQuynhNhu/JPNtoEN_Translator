@@ -106,6 +106,7 @@ class BaselineTrainer:
                         checkpoint_path = os.path.join(self.output_dir, f"checkpoint-step-{global_step}.pt")
                         self.save_checkpoint(checkpoint_path)
                         self.accelerator.print(f"Saved checkpoint at step {global_step} to {checkpoint_path}")
+                    self.accelerator.wait_for_everyone()
                         
             # Gather average loss across all processes
             avg_train_loss = total_loss / len(self.train_loader)
@@ -146,6 +147,8 @@ class BaselineTrainer:
                     best_path = os.path.join(self.output_dir, f"checkpoint-best.pt")
                     self.save_checkpoint(best_path)
                     print(f"Saved new best checkpoint to {best_path} (Metric: {self.best_val_metric:.4f})")
+            
+            self.accelerator.wait_for_everyone()
             
     def evaluate(self):
         """
@@ -231,7 +234,7 @@ class BaselineTrainer:
         
     def save_checkpoint(self, path: str):
         unwrapped_model = self.accelerator.unwrap_model(self.model)
-        torch.save({
+        self.accelerator.save({
             "model_state_dict": unwrapped_model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
         }, path)

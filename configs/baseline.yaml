@@ -19,9 +19,9 @@ model:
 training:
   batch_size: 4
   epochs: 10
-  learning_rate: 0.0002
+  learning_rate: 0.00002
   gradient_accumulation_steps: 4
-  mixed_precision: True
+  mixed_precision: False
   eval_steps: 100
   save_steps: 100
   logging_steps: 10
