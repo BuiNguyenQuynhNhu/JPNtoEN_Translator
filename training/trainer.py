@@ -115,9 +115,10 @@ class BaselineTrainer:
             # Checkpoint logic (only main process should save)
             self.accelerator.wait_for_everyone()
             
+            # Validation (Must run on all processes because of gather_for_metrics)
+            val_loss, val_bleu, val_chrf, val_comet = self.evaluate()
+            
             if self.accelerator.is_main_process:
-                # Validation
-                val_loss, val_bleu, val_chrf, val_comet = self.evaluate()
                 
                 print(f"Epoch {epoch+1} Validation Loss: {val_loss:.4f}")
                 if val_bleu is not None:
@@ -165,7 +166,8 @@ class BaselineTrainer:
         all_srcs = []
         
         with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Evaluating"):
+            progress_bar = tqdm(self.val_loader, desc="Evaluating", disable=not self.accelerator.is_local_main_process)
+            for batch in progress_bar:
                 graph = batch.get("graph", None)
                 if graph is not None:
                     for k, v in graph.items():
@@ -193,13 +195,14 @@ class BaselineTrainer:
                     # Gather across processes to compute global BLEU
                     generated_tokens = self.accelerator.pad_across_processes(generated_tokens, dim=1, pad_index=self.tokenizer.pad_token_id)
                     labels = self.accelerator.pad_across_processes(batch["labels"].to(self.accelerator.device), dim=1, pad_index=-100)
+                    input_ids = self.accelerator.pad_across_processes(batch["input_ids"].to(self.accelerator.device), dim=1, pad_index=self.tokenizer.pad_token_id)
                     
-                    generated_tokens, labels = self.accelerator.gather_for_metrics((generated_tokens, labels))
+                    generated_tokens, labels, input_ids = self.accelerator.gather_for_metrics((generated_tokens, labels, input_ids))
                     
                     decoded_preds = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
                     labels = torch.where(labels != -100, labels, self.tokenizer.pad_token_id)
                     decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
-                    decoded_srcs = self.tokenizer.batch_decode(batch["input_ids"], skip_special_tokens=True)
+                    decoded_srcs = self.tokenizer.batch_decode(input_ids, skip_special_tokens=True)
                     
                     all_preds.extend(decoded_preds)
                     all_labels.extend(decoded_labels)
@@ -211,24 +214,25 @@ class BaselineTrainer:
         chrf_score = None
         comet_score_val = None
         
-        if self.eval_bleu and len(all_preds) > 0:
-            bleu = sacrebleu.corpus_bleu(all_preds, [all_labels])
-            bleu_score = bleu.score
-            
-        if self.eval_chrf and len(all_preds) > 0:
-            chrf = sacrebleu.corpus_chrf(all_preds, [all_labels])
-            chrf_score = chrf.score
-            
-        if self.eval_comet and len(all_preds) > 0:
-            try:
-                from comet import download_model, load_from_checkpoint
-                comet_path = download_model("Unbabel/wmt22-comet-da")
-                comet_model = load_from_checkpoint(comet_path)
-                data = [{"src": s, "mt": p, "ref": r} for s, p, r in zip(all_srcs, all_preds, all_labels)]
-                c_score = comet_model.predict(data, batch_size=8, gpus=1 if torch.cuda.is_available() else 0)
-                comet_score_val = c_score.system_score
-            except Exception as e:
-                print(f"COMET evaluation failed: {e}")
+        if self.accelerator.is_main_process:
+            if self.eval_bleu and len(all_preds) > 0:
+                bleu = sacrebleu.corpus_bleu(all_preds, [all_labels])
+                bleu_score = bleu.score
+                
+            if self.eval_chrf and len(all_preds) > 0:
+                chrf = sacrebleu.corpus_chrf(all_preds, [all_labels])
+                chrf_score = chrf.score
+                
+            if self.eval_comet and len(all_preds) > 0:
+                try:
+                    from comet import download_model, load_from_checkpoint
+                    comet_path = download_model("Unbabel/wmt22-comet-da")
+                    comet_model = load_from_checkpoint(comet_path)
+                    data = [{"src": s, "mt": p, "ref": r} for s, p, r in zip(all_srcs, all_preds, all_labels)]
+                    c_score = comet_model.predict(data, batch_size=8, gpus=1 if torch.cuda.is_available() else 0)
+                    comet_score_val = c_score.system_score
+                except Exception as e:
+                    print(f"COMET evaluation failed: {e}")
             
         return avg_loss, bleu_score, chrf_score, comet_score_val
         
