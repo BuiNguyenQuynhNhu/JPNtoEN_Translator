@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from tqdm import tqdm
 import sacrebleu
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 import sacrebleu
 
 class BaselineTrainer:
@@ -35,10 +36,11 @@ class BaselineTrainer:
         self.grad_accum_steps = config.get("gradient_accumulation_steps", 1)
         self.mixed_precision = config.get("mixed_precision", True)
         self.output_dir = config.get("output_dir", "./checkpoints/baseline")
-        
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.grad_accum_steps,
-            mixed_precision="fp16" if self.mixed_precision else "no"
+            mixed_precision="fp16" if self.mixed_precision else "no",
+            kwargs_handlers=[ddp_kwargs]
         )
         
         self.optimizer = AdamW(model.parameters(), lr=self.lr)
