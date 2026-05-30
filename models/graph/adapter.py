@@ -54,6 +54,11 @@ class GraphMemoryAdapter(nn.Module):
         node_mask = torch.arange(max_nodes, device=node_features.device).unsqueeze(0) < counts.unsqueeze(1)
         key_padding_mask = ~node_mask 
         
+        # Prevent NaN in softmax for completely empty sequences by unmasking their first node
+        empty_seqs = (counts == 0)
+        if empty_seqs.any():
+            key_padding_mask[empty_seqs, 0] = False
+        
         residual = decoder_hidden_states
         x = self.norm(decoder_hidden_states)
         
@@ -77,6 +82,9 @@ class GraphMemoryAdapter(nn.Module):
         # [B, H, T, Max_Nodes] x [B, H, Max_Nodes, head_dim] -> [B, H, T, head_dim]
         out = torch.matmul(attn_weights, v).transpose(1, 2).contiguous().view(B, T, D)
         out = self.out_proj(out)
+        
+        if empty_seqs.any():
+            out[empty_seqs] = 0.0
         
         return residual + out
 

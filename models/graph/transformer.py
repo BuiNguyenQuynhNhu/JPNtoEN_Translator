@@ -134,6 +134,11 @@ class GraphTransformer(nn.Module):
         node_mask = torch.arange(max_nodes, device=node_features.device).unsqueeze(0) < counts.unsqueeze(1) # [B, Max_Nodes]
         padding_mask = ~node_mask # True where padded
         
+        # Prevent NaN in softmax for completely empty sequences
+        empty_seqs = (counts == 0)
+        if empty_seqs.any():
+            padding_mask[empty_seqs, 0] = False
+        
         # We need to mask out attending TO padded nodes, and FROM padded nodes
         # [B, 1, Max_Nodes]
         attn_bias.masked_fill_(padding_mask.unsqueeze(1), float('-inf'))
