@@ -160,23 +160,39 @@ class TranslationDatasetLoader:
         """
         Returns PyTorch DataLoaders for train, validation, and test splits.
         """
-        dataset_dict = self.load_dataset_splits()
+        import os
+        from datasets import DatasetDict, load_from_disk
         
+        tokenized_path = self.config.get("tokenized_path", "data/tokenized_dataset")
+        
+        if os.path.exists(tokenized_path):
+            print(f"Loading tokenized dataset from {tokenized_path}...")
+            tokenized_dataset_dict = load_from_disk(tokenized_path)
+        else:
+            print("Tokenized dataset not found. Generating...")
+            dataset_dict = self.load_dataset_splits()
+            
+            tokenized_dataset_dict = DatasetDict()
+            for split, ds in dataset_dict.items():
+                tokenized_ds = ds.map(
+                    self.preprocess_function,
+                    batched=True,
+                    remove_columns=ds.column_names,
+                    desc=f"Running tokenizer on {split} dataset"
+                )
+                
+                tokenized_ds.set_format(type="python", columns=["input_ids", "attention_mask", "labels", "graph", "offset_mapping"])
+                tokenized_dataset_dict[split] = tokenized_ds
+                
+            print(f"Saving tokenized dataset to {tokenized_path}...")
+            tokenized_dataset_dict.save_to_disk(tokenized_path)
+            
         dataloaders = {}
         
-        for split, ds in dataset_dict.items():
-            tokenized_ds = ds.map(
-                self.preprocess_function,
-                batched=True,
-                remove_columns=ds.column_names,
-                desc=f"Running tokenizer on {split} dataset"
-            )
-            
-            tokenized_ds.set_format(type="python", columns=["input_ids", "attention_mask", "labels", "graph", "offset_mapping"])
-            
+        for split, ds in tokenized_dataset_dict.items():
             shuffle = True if split == "train" else False
             dataloaders[split] = DataLoader(
-                tokenized_ds, 
+                ds, 
                 batch_size=batch_size, 
                 shuffle=shuffle, 
                 collate_fn=self.collate_fn

@@ -21,14 +21,15 @@ from accelerate.utils import DistributedDataParallelKwargs
 import sacrebleu
 
 class BaselineTrainer:
-    def __init__(self, model: nn.Module, tokenizer, train_loader, val_loader, config: dict, eval_bleu: bool = False, eval_comet: bool = False):
+    def __init__(self, model: nn.Module, tokenizer, train_loader, val_loader, config: dict, eval_bleu: bool = False, eval_chrf: bool = False, eval_comet: bool = False):
         self.tokenizer = tokenizer
         self.config = config
         self.eval_bleu = eval_bleu
+        self.eval_chrf = eval_chrf
         self.eval_comet = eval_comet
         
-        self.best_val_metric = float('inf') # if loss, lower is better. if bleu, higher is better.
-        if self.eval_bleu:
+        self.best_val_metric = float('inf') # if loss, lower is better. if bleu/chrf, higher is better.
+        if self.eval_bleu or self.eval_chrf:
             self.best_val_metric = 0.0
         
         self.epochs = config.get("epochs", 3)
@@ -57,6 +58,9 @@ class BaselineTrainer:
         Executes the training loop using Accelerate.
         """
         self.accelerator.print(f"Starting training on {self.accelerator.device} for {self.epochs} epochs...")
+        
+        global_step = 0
+        save_steps = self.config.get("save_steps", 100)
         
         for epoch in range(self.epochs):
             self.model.train()
@@ -95,6 +99,14 @@ class BaselineTrainer:
                 total_loss += loss.item()
                 progress_bar.set_postfix({"loss": f"{loss.item():.4f}"})
                 
+                global_step += 1
+                if global_step % save_steps == 0:
+                    self.accelerator.wait_for_everyone()
+                    if self.accelerator.is_main_process:
+                        checkpoint_path = os.path.join(self.output_dir, f"checkpoint-step-{global_step}.pt")
+                        self.save_checkpoint(checkpoint_path)
+                        self.accelerator.print(f"Saved checkpoint at step {global_step} to {checkpoint_path}")
+                        
             # Gather average loss across all processes
             avg_train_loss = total_loss / len(self.train_loader)
             self.accelerator.print(f"Epoch {epoch+1} completed. Avg Train Loss: {avg_train_loss:.4f}")
@@ -120,6 +132,10 @@ class BaselineTrainer:
                 if self.eval_bleu and val_bleu is not None:
                     if val_bleu > self.best_val_metric:
                         self.best_val_metric = val_bleu
+                        is_best = True
+                elif self.eval_chrf and val_chrf is not None:
+                    if val_chrf > self.best_val_metric:
+                        self.best_val_metric = val_chrf
                         is_best = True
                 else:
                     if val_loss < self.best_val_metric:
@@ -162,8 +178,8 @@ class BaselineTrainer:
                 )
                 total_loss += outputs.loss.item()
                     
-                # 2. Compute BLEU (if enabled)
-                if self.eval_bleu:
+                # 2. Compute Generative Metrics (if enabled)
+                if self.eval_bleu or self.eval_chrf or self.eval_comet:
                     generated_tokens = unwrapped_model.generate(
                         input_ids=batch["input_ids"].to(self.accelerator.device),
                         attention_mask=batch["attention_mask"].to(self.accelerator.device),
@@ -196,6 +212,7 @@ class BaselineTrainer:
             bleu = sacrebleu.corpus_bleu(all_preds, [all_labels])
             bleu_score = bleu.score
             
+        if self.eval_chrf and len(all_preds) > 0:
             chrf = sacrebleu.corpus_chrf(all_preds, [all_labels])
             chrf_score = chrf.score
             

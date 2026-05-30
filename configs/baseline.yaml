@@ -3,6 +3,7 @@
 data:
   dataset_name: "kftt" 
   dataset_path: "data/kftt/orig"
+  tokenized_path: "data/tokenized" 
   train_subset_size: 44000
   val_subset_size: 1170
   test_subset_size: 1160

@@ -16,7 +16,8 @@ def main():
     parser.add_argument("--config", type=str, default="configs/baseline.yaml", help="Path to config file")
     parser.add_argument("--test_dataloader", action="store_true", help="Only test the dataloader")
     parser.add_argument("--test_model", action="store_true", help="Only test the model forward pass")
-    parser.add_argument("--eval_bleu", action="store_true", help="Run BLEU and chrF evaluation on validation set")
+    parser.add_argument("--eval_bleu", action="store_true", help="Run BLEU evaluation on validation set")
+    parser.add_argument("--eval_chrf", action="store_true", help="Run chrF evaluation on validation set")
     parser.add_argument("--eval_comet", action="store_true", help="Run COMET evaluation on validation set (SLOW)")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use for training")
     args = parser.parse_args()
@@ -81,6 +82,7 @@ def main():
         val_loader=dataloaders.get("validation", []),
         config=config["training"],
         eval_bleu=args.eval_bleu,
+        eval_chrf=args.eval_chrf,
         eval_comet=args.eval_comet
     )
     
