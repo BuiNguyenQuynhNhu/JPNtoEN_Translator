@@ -22,6 +22,12 @@ class GraphMemoryAdapter(nn.Module):
         
         self.norm = nn.LayerNorm(embed_dim)
         
+        # Zero-initialize the output projection so the adapter acts as an identity mapping initially.
+        # This prevents randomly initialized weights from injecting massive noise into the LM Head,
+        # which causes exploding gradients and NaN loss.
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+        
     def forward(
         self, 
         decoder_hidden_states: torch.Tensor, 

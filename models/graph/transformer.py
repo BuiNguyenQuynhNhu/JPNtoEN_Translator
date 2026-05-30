@@ -139,10 +139,9 @@ class GraphTransformer(nn.Module):
         if empty_seqs.any():
             padding_mask[empty_seqs, 0] = False
         
-        # We need to mask out attending TO padded nodes, and FROM padded nodes
+        # We need to mask out attending TO padded nodes.
         # [B, 1, Max_Nodes]
         attn_bias.masked_fill_(padding_mask.unsqueeze(1), float('-inf'))
-        attn_bias.masked_fill_(padding_mask.unsqueeze(2), float('-inf'))
         
         # 4. Pass through Graph Transformer layers
         x = dense_nodes
