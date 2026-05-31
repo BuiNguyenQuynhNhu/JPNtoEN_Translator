@@ -185,11 +185,15 @@ class BaselineTrainer:
                     
                 # 2. Compute Generative Metrics (if enabled)
                 if self.eval_bleu or self.eval_chrf or self.eval_comet:
+                    # NLLB requires forced_bos_token_id to generate the correct target language
+                    tgt_lang_id = self.tokenizer.lang_code_to_id.get(self.tokenizer.tgt_lang) if hasattr(self.tokenizer, "lang_code_to_id") else None
+                    
                     generated_tokens = unwrapped_model.generate(
                         input_ids=batch["input_ids"].to(self.accelerator.device),
                         attention_mask=batch["attention_mask"].to(self.accelerator.device),
                         graph=graph,
-                        max_length=self.config.get("max_length", 128)
+                        max_length=self.config.get("max_length", 128),
+                        forced_bos_token_id=tgt_lang_id
                     )
                     
                     # Gather across processes to compute global BLEU
